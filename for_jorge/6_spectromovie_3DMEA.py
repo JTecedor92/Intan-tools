@@ -138,6 +138,8 @@ save_path = filedialog.asksaveasfilename(
     initialdir="C:\Internship Data"
 )
 
+# Change initialdir to valid file path
+
 if save_path:
     ani_save.save(save_path, writer='pillow', fps=20)
     print(f"GIF saved to: {save_path}")
