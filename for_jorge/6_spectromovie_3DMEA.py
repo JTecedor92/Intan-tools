@@ -2,7 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import tkinter as tk
+from tkinter.simpledialog import askinteger
 from tkinter import filedialog
+from scipy.signal import butter, sosfiltfilt
 
 from intanutil.data import (
     calculate_data_size,
@@ -21,8 +23,10 @@ root.withdraw()
 file_path = filedialog.askopenfilename(
     title="Select RHS file",
     filetypes=[("RHS files", "*.rhs")],
-    initialdir="."
+    initialdir="C:/Internship Data"
 )
+
+# Change initialdir to valid file path
 
 if not file_path:
     print("No file selected.")
@@ -40,12 +44,34 @@ with open(file_path, 'rb') as fid:
     check_end_of_file(filesize, fid)
 
 # --- Post-processing ---
+def apply_bandpass_filter(data, lowcut, highcut, fs, order=4):
+    nyquist = 0.5 * fs
+    low = lowcut / nyquist
+    high = highcut / nyquist
+
+    if low <= 0 or high >= 1 or low >= high:
+        raise ValueError(f"Invalid bandpass range: lowcut {lowcut} Hz, highcut {highcut} Hz")
+
+    sos = butter(order, [low, high], btype='bandpass', output='sos')
+    return sosfiltfilt(sos, data, axis=1)
+
 apply_notch_filter(header, data)
 parse_data(header, data)
 result = data_to_result(header, data, {})
 
 amplifier_data = result['amplifier_data'][:64]
 sample_rate = header['sample_rate']
+
+# Define filter bounds
+lowcut = askinteger("Select Channel", "Enter filter lower bound (Hz):", minvalue=0.00001)
+highcut = askinteger("Select Channel", "Enter filter upper bound (Hz):", minvalue= lowcut + 0.00001)
+if lowcut is None or highcut is None:
+    print("Filter specifications not fulfilled.")
+    exit()
+
+# Apply band-pass filter
+amplifier_data = apply_bandpass_filter(amplifier_data, lowcut, highcut, sample_rate)
+print("Filtered amplifier data range:", np.min(amplifier_data), "to", np.max(amplifier_data))
 
 # --- Custom 8x8 Layout ---
 layout_names = [
@@ -85,36 +111,42 @@ fig, ax = plt.subplots()
 img = ax.imshow(np.zeros((8, 8)), cmap='viridis', vmin=0, vmax=1000)
 cb = plt.colorbar(img, ax=ax)
 cb.set_label("Power (µV²)")
-ax.set_title("Channel Power Over Time")
 ax.set_xlabel("X")
 ax.set_ylabel("Y")
 
-def update(frame_idx):
-    start = frame_idx * step_size
-    end = start + window_size
-    if end > n_samples:
-        return []
+def make_update_function(lowpass, highpass):
+    def update(frame_idx):
+        start = frame_idx * step_size
+        end = start + window_size
+        if end > n_samples:
+            return []
 
-    power = compute_power_window(amplifier_data[:, start:end])
-    power_grid = power[channel_grid]
-    img.set_data(power_grid)
-    ax.set_title(f"Time: {start / sample_rate:.2f}s")
-    return [img]
+        power = compute_power_window(amplifier_data[:, start:end])
+        power_grid = power[channel_grid]
+        img.set_data(power_grid)
+        ax.set_title(f"Time: {start / sample_rate:.2f}s - bandpass:{lowpass}Hz-{highpass}Hz")
+        return [img]
+    return update
 
-def update_save(frame_idx):
-    start = frame_idx * step_size
-    end = start + window_size
-    if end > n_samples:
-        return []
+def make_update_save_function(lowpass, highpass):
+    def update_save(frame_idx):
+        start = frame_idx * step_size
+        end = start + window_size
+        if end > n_samples:
+            return []
 
-    power = compute_power_window(amplifier_data[:, start:end])
-    power_grid = power[channel_grid]
-    img_save.set_data(power_grid)
-    ax_save.set_title(f"Time: {start / sample_rate:.2f}s")
-    return [img_save]
+        power = compute_power_window(amplifier_data[:, start:end])
+        power_grid = power[channel_grid]
+        img_save.set_data(power_grid)
+        ax_save.set_title(f"Time: {start / sample_rate:.2f}s - bandpass:{lowpass}Hz-{highpass}Hz")
+        return [img_save]
+    return update_save
 
 # === FULL ANIMATION FOR DISPLAY ===
-ani = animation.FuncAnimation(fig, update, frames=n_frames, blit=False, interval=50)
+ani = animation.FuncAnimation(
+    fig, make_update_function(lowcut, highcut),
+    frames=n_frames, blit=False, interval=50
+)
 
 # === LIMITED ANIMATION FOR SAVING ===
 # Create a hidden figure (so it doesn't interfere)
@@ -122,13 +154,15 @@ fig_save, ax_save = plt.subplots()
 img_save = ax_save.imshow(np.zeros((8, 8)), cmap='viridis', vmin=0, vmax=1000)
 cb_save = plt.colorbar(img_save, ax=ax_save)
 cb_save.set_label("Power (µV²)")
-ax_save.set_title("Channel Power Over Time")
 ax_save.set_xlabel("X")
 ax_save.set_ylabel("Y")
 
 # 10 seconds × 20 fps = 200 frames
 frames_to_save = min(200, n_frames)
-ani_save = animation.FuncAnimation(fig_save, update_save, frames=frames_to_save, blit=False, interval=50)
+ani_save = animation.FuncAnimation(
+    fig_save, make_update_save_function(lowcut, highcut),
+    frames=frames_to_save, blit=False, interval=50
+)
 
 # Save to GIF
 save_path = filedialog.asksaveasfilename(
